@@ -1,22 +1,24 @@
-<div class="grid grid-cols-1 px-6 max-w-2xl mx-auto" id="cart_items" phx-update="stream">
+<div class="grid grid-cols-1 px-6 max-w-2xl mx-auto">
   <h1 class="text-4xl pb-12 font-semibold">Your Cart</h1>
-  <div
-    :for={{dom_id, cart_item} <- @streams.cart_items}
-    id={dom_id}
-    class="cursor-pointer grid grid-cols-[8rem_1fr_auto] items-center border-b"
-    phx-click={JS.navigate(~p"/products/#{cart_item.product}")}
-  >
-    <img
-      class="p-6 object-contain"
-      src={cart_item.product.thumbnail}
-      title={cart_item.product.name}
-      alt={cart_item.product.name}
-    />
-    <div>
-      <%= cart_item.product.name %>
-    </div>
-    <div>
-      <%= Money.new(cart_item.product.amount * cart_item.quantity) %>
+  <div id="cart_items" phx-update="stream">
+    <div
+      :for={{dom_id, cart_item} <- @streams.cart_items}
+      id={dom_id}
+      class="cursor-pointer grid grid-cols-[8rem_1fr_auto] items-center border-b"
+      phx-click={JS.navigate(~p"/products/#{cart_item.product}")}
+    >
+      <img
+        class="p-6 object-contain"
+        src={cart_item.product.thumbnail}
+        title={cart_item.product.name}
+        alt={cart_item.product.name}
+      />
+      <div>
+        <%= cart_item.product.name %>
+      </div>
+      <div>
+        <%= Money.new(cart_item.product.amount * cart_item.quantity) %>
+      </div>
     </div>
   </div>
 
