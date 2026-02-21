@@ -1,22 +1,18 @@
 defmodule AmazinWeb.CartLive.Show do
   use AmazinWeb, :live_view
 
-  alias Amazin.Store
+  alias Amazin.Foundation.Carts
+  alias Amazin.Domain.{Pricing, Checkout}
 
   @impl true
   def mount(_params, session, socket) do
-    cart_items = Store.list_cart_items(session["cart_id"])
-
-    total =
-      cart_items
-      |> Enum.map(fn ci -> ci.product.amount * ci.quantity end)
-      |> Enum.sum()
-      |> Money.new()
+    cart_id = session["cart_id"]
+    cart_items = Carts.list_items(cart_id)
 
     socket =
       socket
-      |> assign(:cart_id, session["cart_id"])
-      |> assign(:total, total)
+      |> assign(:cart_id, cart_id)
+      |> assign(:total, Pricing.cart_total(cart_items))
       |> stream(:cart_items, cart_items)
 
     {:ok, socket}
@@ -29,33 +25,23 @@ defmodule AmazinWeb.CartLive.Show do
 
   @impl true
   def handle_event("checkout", _params, socket) do
-    cart_items = Store.list_cart_items(socket.assigns.cart_id)
+    cart_items = Carts.list_items(socket.assigns.cart_id)
 
-    line_items =
-      Enum.map(cart_items, fn ci ->
-        %{
-          price_data: %{
-            currency: "usd",
-            product_data: %{
-              name: ci.product.name,
-              description: ci.product.description,
-              images: [ci.product.thumbnail]
-            },
-            unit_amount: ci.product.amount
-          },
-          quantity: ci.quantity
-        }
-      end)
+    case Checkout.validate(cart_items) do
+      {:ok, items} ->
+        line_items = Checkout.prepare_line_items(items)
+        metadata = %{"cart_id" => socket.assigns.cart_id}
+        urls = %{success_url: url(~p"/cart/success"), cancel_url: url(~p"/cart")}
 
-    {:ok, checkout_session} =
-      Stripe.Checkout.Session.create(%{
-        line_items: line_items,
-        mode: :payment,
-        success_url: url(~p"/cart/success"),
-        cancel_url: url(~p"/cart"),
-        metadata: %{"cart_id" => socket.assigns.cart_id}
-      })
+        {:ok, checkout_url} = payment_gateway().create_checkout_session(line_items, metadata, urls)
+        {:noreply, redirect(socket, external: checkout_url)}
 
-    {:noreply, redirect(socket, external: checkout_session.url)}
+      {:error, :empty_cart} ->
+        {:noreply, put_flash(socket, :error, "Your cart is empty")}
+    end
+  end
+
+  defp payment_gateway do
+    Application.get_env(:amazin, :payment_gateway, Amazin.Foundation.StripeGateway)
   end
 end

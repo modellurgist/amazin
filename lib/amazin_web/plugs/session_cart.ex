@@ -6,7 +6,7 @@ defmodule AmazinWeb.Plugs.SessionCart do
 
   import Plug.Conn
 
-  alias Amazin.Store
+  alias Amazin.Foundation.Carts
 
   @impl true
   def init(default), do: default
@@ -15,16 +15,16 @@ defmodule AmazinWeb.Plugs.SessionCart do
   def call(conn, _config) do
     case get_session(conn, :cart_id) do
       nil ->
-        {:ok, %{id: cart_id}} = Store.create_cart()
+        {:ok, %{id: cart_id}} = Carts.create()
         put_session(conn, :cart_id, cart_id)
 
       cart_id ->
-        case Store.get_cart(cart_id) do
+        case Carts.get(cart_id) do
           %{status: :open} ->
             conn
 
           _cart ->
-            {:ok, %{id: cart_id}} = Store.create_cart()
+            {:ok, %{id: cart_id}} = Carts.create()
             put_session(conn, :cart_id, cart_id)
         end
     end

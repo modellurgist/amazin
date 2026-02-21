@@ -2,7 +2,7 @@ defmodule AmazinWeb.StripeWebhookHandlerTest do
   use Amazin.DataCase
 
   alias AmazinWeb.StripeWebhookHandler
-  alias Amazin.Store
+  alias Amazin.Foundation.Carts
 
   import Amazin.StoreFixtures
 
@@ -15,7 +15,7 @@ defmodule AmazinWeb.StripeWebhookHandlerTest do
     }
 
     assert :ok = StripeWebhookHandler.handle_event(event)
-    assert Store.get_cart(cart.id).status == :completed
+    assert Carts.get(cart.id).status == :completed
   end
 
   test "unhandled event returns :ok" do

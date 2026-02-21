@@ -1,16 +1,15 @@
 defmodule AmazinWeb.CartLive.Success do
   @moduledoc """
-  Success live view.
+  Success live view displayed after checkout completion.
   """
 
   use AmazinWeb, :live_view
 
-  alias Amazin.Store
+  alias Amazin.Foundation.Carts
 
   @impl true
   def mount(_params, session, socket) do
-    cart = Store.get_cart(session["cart_id"])
-
+    cart = Carts.get(session["cart_id"])
     {:ok, assign(socket, :cart, cart)}
   end
 

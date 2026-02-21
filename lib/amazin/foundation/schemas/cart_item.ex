@@ -1,8 +1,8 @@
-defmodule Amazin.Store.CartItem do
+defmodule Amazin.Foundation.Schemas.CartItem do
   use Ecto.Schema
   import Ecto.Changeset
 
-  alias Amazin.Store.Product
+  alias Amazin.Foundation.Schemas.Product
 
   schema "cart_items" do
     field :quantity, :integer
@@ -12,7 +12,6 @@ defmodule Amazin.Store.CartItem do
     timestamps()
   end
 
-  @doc false
   def changeset(cart_item, attrs) do
     cart_item
     |> cast(attrs, [:quantity])

@@ -1,4 +1,4 @@
-defmodule Amazin.Store.Cart do
+defmodule Amazin.Foundation.Schemas.Cart do
   use Ecto.Schema
   import Ecto.Changeset
 
@@ -8,7 +8,6 @@ defmodule Amazin.Store.Cart do
     timestamps()
   end
 
-  @doc false
   def changeset(cart, attrs) do
     cart
     |> cast(attrs, [:status])

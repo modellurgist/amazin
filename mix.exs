@@ -36,6 +36,7 @@ defmodule Amazin.MixProject do
       {:esbuild, "~> 0.7", runtime: Mix.env() == :dev},
       {:finch, "~> 0.13"},
       {:floki, ">= 0.30.0", only: :test},
+      {:mox, "~> 1.0", only: :test},
       {:gettext, "~> 0.20"},
       {:jason, "~> 1.2"},
       {:money, "~> 1.12"},

@@ -1,7 +1,7 @@
 defmodule AmazinWeb.ProductLive.FormComponent do
   use AmazinWeb, :live_component
 
-  alias Amazin.Store
+  alias Amazin.Foundation.{Products, Broadcast}
 
   @impl true
   def render(assigns) do
@@ -34,7 +34,7 @@ defmodule AmazinWeb.ProductLive.FormComponent do
 
   @impl true
   def update(%{product: product} = assigns, socket) do
-    changeset = Store.change_product(product)
+    changeset = Products.changeset(product)
 
     {:ok,
      socket
@@ -46,7 +46,7 @@ defmodule AmazinWeb.ProductLive.FormComponent do
   def handle_event("validate", %{"product" => product_params}, socket) do
     changeset =
       socket.assigns.product
-      |> Store.change_product(product_params)
+      |> Products.changeset(product_params)
       |> Map.put(:action, :validate)
 
     {:noreply, assign_form(socket, changeset)}
@@ -57,8 +57,9 @@ defmodule AmazinWeb.ProductLive.FormComponent do
   end
 
   defp save_product(socket, :edit, product_params) do
-    case Store.update_product(socket.assigns.product, product_params) do
+    case Products.update(socket.assigns.product, product_params) do
       {:ok, product} ->
+        Broadcast.notify(:product_updated, product)
         notify_parent({:saved, product})
 
         {:noreply,
@@ -72,8 +73,9 @@ defmodule AmazinWeb.ProductLive.FormComponent do
   end
 
   defp save_product(socket, :new, product_params) do
-    case Store.create_product(product_params) do
+    case Products.insert(product_params) do
       {:ok, product} ->
+        Broadcast.notify(:product_created, product)
         notify_parent({:saved, product})
 
         {:noreply,

@@ -1,17 +1,17 @@
 defmodule AmazinWeb.ProductLive.Index do
   use AmazinWeb, :live_view
 
-  alias Amazin.Store
-  alias Amazin.Store.Product
+  alias Amazin.Foundation.{Products, Carts, Broadcast}
+  alias Amazin.Foundation.Schemas.Product
 
   @impl true
   def mount(_params, session, socket) do
-    if connected?(socket), do: Store.subscribe_to_product_events()
+    if connected?(socket), do: Broadcast.subscribe()
 
     socket =
       socket
       |> assign(:cart_id, session["cart_id"])
-      |> stream(:products, Store.list_products())
+      |> stream(:products, Products.list())
 
     {:ok, socket}
   end
@@ -24,7 +24,7 @@ defmodule AmazinWeb.ProductLive.Index do
   defp apply_action(socket, :edit, %{"id" => id}) do
     socket
     |> assign(:page_title, "Edit Product")
-    |> assign(:product, Store.get_product!(id))
+    |> assign(:product, Products.get!(id))
   end
 
   defp apply_action(socket, :new, _params) do
@@ -60,20 +60,16 @@ defmodule AmazinWeb.ProductLive.Index do
 
   @impl true
   def handle_event("delete", %{"id" => id}, socket) do
-    product = Store.get_product!(id)
-    {:ok, _} = Store.delete_product(product)
-
+    product = Products.get!(id)
+    {:ok, _} = Products.delete(product)
     {:noreply, stream_delete(socket, :products, product)}
   end
 
   @impl true
   def handle_event("add_to_cart", %{"id" => id}, socket) do
-    product = Store.get_product!(id)
-
-    Store.add_item_to_cart(socket.assigns.cart_id, product)
-
+    product = Products.get!(id)
+    Carts.add_item(socket.assigns.cart_id, product)
     Process.send_after(self(), :clear_flash, 2500)
-
     {:noreply, socket |> put_flash(:info, "Added to cart")}
   end
 end

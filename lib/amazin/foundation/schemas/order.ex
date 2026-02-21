@@ -1,4 +1,4 @@
-defmodule Amazin.Store.Order do
+defmodule Amazin.Foundation.Schemas.Order do
   use Ecto.Schema
   import Ecto.Changeset
 
@@ -8,7 +8,6 @@ defmodule Amazin.Store.Order do
     timestamps()
   end
 
-  @doc false
   def changeset(order, attrs) do
     order
     |> cast(attrs, [])

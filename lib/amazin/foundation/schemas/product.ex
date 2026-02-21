@@ -1,4 +1,4 @@
-defmodule Amazin.Store.Product do
+defmodule Amazin.Foundation.Schemas.Product do
   use Ecto.Schema
   import Ecto.Changeset
 
@@ -22,7 +22,6 @@ defmodule Amazin.Store.Product do
     timestamps()
   end
 
-  @doc false
   def changeset(product, attrs) do
     product
     |> cast(attrs, [:amount, :description, :name, :stock, :thumbnail])

@@ -1,7 +1,7 @@
 defmodule AmazinWeb.ProductLive.Show do
   use AmazinWeb, :live_view
 
-  alias Amazin.Store
+  alias Amazin.Foundation.Products
 
   @impl true
   def mount(_params, _session, socket) do
@@ -13,7 +13,7 @@ defmodule AmazinWeb.ProductLive.Show do
     {:noreply,
      socket
      |> assign(:page_title, page_title(socket.assigns.live_action))
-     |> assign(:product, Store.get_product!(id))}
+     |> assign(:product, Products.get!(id))}
   end
 
   defp page_title(:show), do: "Show Product"
