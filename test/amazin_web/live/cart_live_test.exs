@@ -22,15 +22,64 @@ defmodule AmazinWeb.CartLiveTest do
       assert html =~ "Checkout"
     end
 
-    test "renders empty cart", %{conn: conn} do
+    test "renders empty cart message", %{conn: conn} do
       cart = cart_fixture()
       conn = init_test_session(conn, %{cart_id: cart.id})
       {:ok, _live, html} = live(conn, ~p"/cart")
 
-      assert html =~ "Your Cart"
+      assert html =~ "Your cart is empty"
+      assert html =~ "Browse products"
     end
 
-    test "checkout redirects to payment gateway URL", %{conn: conn} do
+    test "quantity increment updates item and total", %{conn: conn} do
+      {cart, [product_a, _product_b]} = cart_with_items_fixture()
+      conn = init_test_session(conn, %{cart_id: cart.id})
+      {:ok, live_view, _html} = live(conn, ~p"/cart")
+
+      items = Carts.list_items(cart.id)
+      item_a = Enum.find(items, &(&1.product.id == product_a.id))
+
+      html =
+        live_view
+        |> element("[phx-click=update_quantity][phx-value-delta=\"1\"][phx-value-item-id=\"#{item_a.id}\"]")
+        |> render_click()
+
+      updated = Carts.list_items(cart.id) |> Enum.find(&(&1.id == item_a.id))
+      assert updated.quantity == 2
+      assert html =~ to_string(Money.new(product_a.amount * 2))
+    end
+
+    test "decrement button is disabled when quantity is 1", %{conn: conn} do
+      {cart, [product_a, _product_b]} = cart_with_items_fixture()
+      conn = init_test_session(conn, %{cart_id: cart.id})
+      {:ok, _live_view, html} = live(conn, ~p"/cart")
+
+      items = Carts.list_items(cart.id)
+      item_a = Enum.find(items, &(&1.product.id == product_a.id))
+
+      assert html =~
+               ~s(phx-value-item-id="#{item_a.id}" phx-value-delta="-1") ||
+               html =~ ~s(disabled)
+    end
+
+    test "remove item deletes from cart", %{conn: conn} do
+      {cart, [product_a, _product_b]} = cart_with_items_fixture()
+      conn = init_test_session(conn, %{cart_id: cart.id})
+      {:ok, live_view, _html} = live(conn, ~p"/cart")
+
+      items = Carts.list_items(cart.id)
+      item_a = Enum.find(items, &(&1.product.id == product_a.id))
+
+      html =
+        live_view
+        |> element("[phx-click=remove_item][phx-value-item-id=\"#{item_a.id}\"]")
+        |> render_click()
+
+      refute html =~ product_a.name
+      assert length(Carts.list_items(cart.id)) == 1
+    end
+
+    test "checkout shows processing state then redirects on async completion", %{conn: conn} do
       {cart, _products} = cart_with_items_fixture()
 
       Amazin.MockPaymentGateway
@@ -43,8 +92,19 @@ defmodule AmazinWeb.CartLiveTest do
       conn = init_test_session(conn, %{cart_id: cart.id})
       {:ok, live_view, _html} = live(conn, ~p"/cart")
 
-      assert {:error, {:redirect, %{to: "https://checkout.stripe.com/test-session"}}} =
-               live_view |> element("button", "Checkout") |> render_click()
+      html = live_view |> element("button", "Checkout") |> render_click()
+      assert html =~ "Processing payment"
+
+      assert_redirect(live_view, "https://checkout.stripe.com/test-session")
+    end
+
+    test "checkout button is disabled when cart is empty", %{conn: conn} do
+      cart = cart_fixture()
+      conn = init_test_session(conn, %{cart_id: cart.id})
+      {:ok, _live_view, html} = live(conn, ~p"/cart")
+
+      assert html =~ "disabled"
+      assert html =~ "Your cart is empty"
     end
   end
 

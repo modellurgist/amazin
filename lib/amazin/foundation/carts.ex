@@ -34,6 +34,22 @@ defmodule Amazin.Foundation.Carts do
     )
   end
 
+  @spec update_quantity(integer(), integer(), integer()) :: {:ok, CartItem.t()} | {:error, Ecto.Changeset.t()}
+  def update_quantity(cart_id, item_id, quantity) do
+    CartItem
+    |> where([ci], ci.cart_id == ^cart_id and ci.id == ^item_id)
+    |> Repo.one!()
+    |> CartItem.changeset(%{quantity: quantity})
+    |> Repo.update()
+  end
+
+  @spec remove_item(integer(), integer()) :: {non_neg_integer(), nil}
+  def remove_item(cart_id, item_id) do
+    CartItem
+    |> where([ci], ci.cart_id == ^cart_id and ci.id == ^item_id)
+    |> Repo.delete_all()
+  end
+
   @spec complete(Cart.t()) :: {:ok, Cart.t()} | {:error, Ecto.Changeset.t()}
   def complete(%Cart{} = cart) do
     cart

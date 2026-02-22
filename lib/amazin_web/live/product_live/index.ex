@@ -54,6 +54,12 @@ defmodule AmazinWeb.ProductLive.Index do
     {:noreply, stream_insert(socket, :products, created_product)}
   end
 
+  @impl true
+  def handle_info({:stock_changed, {product_id, new_stock}}, socket) do
+    product = Products.get!(product_id)
+    {:noreply, stream_insert(socket, :products, %{product | stock: new_stock})}
+  end
+
   def handle_info(:clear_flash, socket) do
     {:noreply, clear_flash(socket)}
   end

@@ -53,6 +53,29 @@ defmodule Amazin.Foundation.ProductsTest do
     product = product_fixture()
     assert %Ecto.Changeset{} = Products.changeset(product)
   end
+
+  test "decrement_stock/2 reduces stock and returns updated product" do
+    product = product_fixture(%{stock: 10})
+    assert {:ok, updated} = Products.decrement_stock(product.id, 3)
+    assert updated.stock == 7
+  end
+
+  test "decrement_stock/2 fails when stock is insufficient" do
+    product = product_fixture(%{stock: 2})
+    assert {:error, :insufficient_stock} = Products.decrement_stock(product.id, 5)
+  end
+
+  test "stock_levels/1 returns map of product_id to stock" do
+    p1 = product_fixture(%{name: "A", stock: 10})
+    p2 = product_fixture(%{name: "B", stock: 3})
+    levels = Products.stock_levels([p1.id, p2.id])
+    assert levels[p1.id] == 10
+    assert levels[p2.id] == 3
+  end
+
+  test "stock_levels/1 with empty list returns empty map" do
+    assert Products.stock_levels([]) == %{}
+  end
 end
 
 defmodule Amazin.Foundation.CartsTest do
@@ -98,6 +121,26 @@ defmodule Amazin.Foundation.CartsTest do
     {:ok, _} = Carts.add_item(cart.id, product)
     items = Carts.list_items(cart.id)
     assert [%CartItem{quantity: 2}] = items
+  end
+
+  test "update_quantity/3 changes item quantity" do
+    {cart, [product_a, _]} = cart_with_items_fixture()
+    items = Carts.list_items(cart.id)
+    item_a = Enum.find(items, &(&1.product.id == product_a.id))
+
+    assert {:ok, updated} = Carts.update_quantity(cart.id, item_a.id, 5)
+    assert updated.quantity == 5
+  end
+
+  test "remove_item/2 deletes the cart item" do
+    {cart, [product_a, _]} = cart_with_items_fixture()
+    items = Carts.list_items(cart.id)
+    item_a = Enum.find(items, &(&1.product.id == product_a.id))
+
+    assert {1, nil} = Carts.remove_item(cart.id, item_a.id)
+    remaining = Carts.list_items(cart.id)
+    assert length(remaining) == 1
+    refute Enum.any?(remaining, &(&1.id == item_a.id))
   end
 
   test "complete/1 marks a cart as completed" do
