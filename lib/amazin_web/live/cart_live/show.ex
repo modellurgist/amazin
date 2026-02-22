@@ -7,9 +7,13 @@ defmodule AmazinWeb.CartLive.Show do
   the outcomes as side effects (persist, stream, flash, redirect, async).
 
   Every handler follows the same shape:
-    1. Gather context (early from @page, late from DB)
-    2. Dispatch to CartPage.handle/3
-    3. Assign updated page + apply outcome
+    1. Parse/gather context (early from @page, late from DB)
+    2. Call `dispatch/3` which delegates to `CartPage.handle/3`
+    3. `dispatch` assigns the updated page and applies the outcome
+
+  Outcomes are self-describing tagged tuples — `{:quantity_changed, item}`,
+  `{:redirect, url}`, etc. — so the same `apply_outcome/2` clause handles
+  an outcome regardless of which event produced it.
 
   The template renders from @page assigns and @streams.cart_items.
   All components are stateless function components — no LiveComponents,
@@ -37,27 +41,24 @@ defmodule AmazinWeb.CartLive.Show do
   def handle_params(_params, _url, socket), do: {:noreply, socket}
 
   # ---------------------------------------------------------------------------
-  # Event dispatch — every handler follows the same shape
+  # Event handlers — parse params, then dispatch to CartPage
   # ---------------------------------------------------------------------------
 
   @impl true
   def handle_event("update_quantity", %{"item-id" => id, "delta" => delta}, socket) do
-    data = %{item_id: String.to_integer(id), delta: String.to_integer(delta)}
-    {page, outcome} = CartPage.handle(:update_quantity, data, socket.assigns.page)
-    {:noreply, socket |> assign(:page, page) |> apply_outcome(:update_quantity, outcome)}
+    {:noreply, dispatch(socket, :update_quantity, %{
+      item_id: String.to_integer(id),
+      delta: String.to_integer(delta)
+    })}
   end
 
   def handle_event("remove_item", %{"item-id" => id}, socket) do
-    data = %{item_id: String.to_integer(id)}
-    {page, outcome} = CartPage.handle(:remove_item, data, socket.assigns.page)
-    {:noreply, socket |> assign(:page, page) |> apply_outcome(:remove_item, outcome)}
+    {:noreply, dispatch(socket, :remove_item, %{item_id: String.to_integer(id)})}
   end
 
   def handle_event("checkout", _params, socket) do
-    page = socket.assigns.page
-    stock = Products.stock_levels(product_ids(page))
-    {page, outcome} = CartPage.handle(:checkout, %{stock_levels: stock}, page)
-    {:noreply, socket |> assign(:page, page) |> apply_outcome(:checkout, outcome)}
+    stock = Products.stock_levels(product_ids(socket.assigns.page))
+    {:noreply, dispatch(socket, :checkout, %{stock_levels: stock})}
   end
 
   # ---------------------------------------------------------------------------
@@ -66,18 +67,15 @@ defmodule AmazinWeb.CartLive.Show do
 
   @impl true
   def handle_async(:checkout, {:ok, {:ok, url}}, socket) do
-    {page, outcome} = CartPage.handle(:checkout_complete, %{url: url}, socket.assigns.page)
-    {:noreply, socket |> assign(:page, page) |> apply_outcome(:checkout_complete, outcome)}
+    {:noreply, dispatch(socket, :checkout_complete, %{url: url})}
   end
 
   def handle_async(:checkout, {:ok, {:error, reason}}, socket) do
-    {page, outcome} = CartPage.handle(:checkout_failed, %{reason: reason}, socket.assigns.page)
-    {:noreply, socket |> assign(:page, page) |> apply_outcome(:checkout_failed, outcome)}
+    {:noreply, dispatch(socket, :checkout_failed, %{reason: reason})}
   end
 
   def handle_async(:checkout, {:exit, _reason}, socket) do
-    {page, outcome} = CartPage.handle(:checkout_failed, %{}, socket.assigns.page)
-    {:noreply, socket |> assign(:page, page) |> apply_outcome(:checkout_failed, outcome)}
+    {:noreply, dispatch(socket, :checkout_failed, %{})}
   end
 
   # ---------------------------------------------------------------------------
@@ -86,50 +84,59 @@ defmodule AmazinWeb.CartLive.Show do
 
   @impl true
   def handle_info({:stock_changed, {product_id, new_stock}}, socket) do
-    data = %{product_id: product_id, new_stock: new_stock}
-    {page, _outcome} = CartPage.handle(:stock_changed, data, socket.assigns.page)
-    {:noreply, assign(socket, :page, page)}
+    {:noreply, dispatch(socket, :stock_changed, %{product_id: product_id, new_stock: new_stock})}
   end
 
   def handle_info(_msg, socket), do: {:noreply, socket}
 
   # ---------------------------------------------------------------------------
-  # Outcome application — maps domain results to Phoenix effects
+  # Dispatch — the uniform bridge between handlers and CartPage
   # ---------------------------------------------------------------------------
 
-  defp apply_outcome(socket, :update_quantity, {:quantity_changed, updated_item}) do
+  defp dispatch(socket, event, data) do
+    {page, outcome} = CartPage.handle(event, data, socket.assigns.page)
+    socket |> assign(:page, page) |> apply_outcome(outcome)
+  end
+
+  # ---------------------------------------------------------------------------
+  # Outcome application — self-describing: keyed on the outcome, not the event
+  # ---------------------------------------------------------------------------
+
+  defp apply_outcome(socket, {:quantity_changed, updated_item}) do
     Carts.update_quantity(socket.assigns.page.cart_id, updated_item.id, updated_item.quantity)
     stream_insert(socket, :cart_items, updated_item)
   end
 
-  defp apply_outcome(socket, :remove_item, {:item_removed, removed_item}) when not is_nil(removed_item) do
-    Carts.remove_item(socket.assigns.page.cart_id, removed_item.id)
-    stream_delete(socket, :cart_items, removed_item)
+  defp apply_outcome(socket, {:item_removed, item}) when not is_nil(item) do
+    Carts.remove_item(socket.assigns.page.cart_id, item.id)
+    stream_delete(socket, :cart_items, item)
   end
 
-  defp apply_outcome(socket, :remove_item, {:item_removed, nil}), do: socket
+  defp apply_outcome(socket, {:item_removed, nil}), do: socket
 
-  defp apply_outcome(socket, :checkout, {:checkout_ready, line_items, metadata}) do
+  defp apply_outcome(socket, {:checkout_ready, line_items, metadata}) do
     start_async(socket, :checkout, fn ->
       payment_gateway().create_checkout_session(line_items, metadata, checkout_urls())
     end)
   end
 
-  defp apply_outcome(socket, :checkout, {:error, :empty_cart}) do
+  defp apply_outcome(socket, {:error, :empty_cart}) do
     put_flash(socket, :error, "Your cart is empty")
   end
 
-  defp apply_outcome(socket, :checkout, {:error, {:out_of_stock, _items}}) do
+  defp apply_outcome(socket, {:error, {:out_of_stock, _items}}) do
     put_flash(socket, :error, "Some items are out of stock")
   end
 
-  defp apply_outcome(socket, :checkout_complete, {:redirect, url}) do
+  defp apply_outcome(socket, {:redirect, url}) do
     redirect(socket, external: url)
   end
 
-  defp apply_outcome(socket, :checkout_failed, {:checkout_error, msg}) do
+  defp apply_outcome(socket, {:checkout_error, msg}) do
     put_flash(socket, :error, msg)
   end
+
+  defp apply_outcome(socket, :noop), do: socket
 
   # ---------------------------------------------------------------------------
   # Render — inline for locality of behavior

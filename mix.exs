@@ -32,6 +32,7 @@ defmodule Amazin.MixProject do
   # Type `mix help deps` for examples and options.
   defp deps do
     [
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ecto_sql, "~> 3.10"},
       {:esbuild, "~> 0.7", runtime: Mix.env() == :dev},
       {:finch, "~> 0.13"},
