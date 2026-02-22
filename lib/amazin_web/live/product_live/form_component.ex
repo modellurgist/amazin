@@ -1,7 +1,8 @@
 defmodule AmazinWeb.ProductLive.FormComponent do
   use AmazinWeb, :live_component
 
-  alias Amazin.Foundation.{Products, Broadcast}
+  alias Amazin.Foundation.Products
+  alias Amazin.Actions.SaveProduct
 
   @impl true
   def render(assigns) do
@@ -53,39 +54,25 @@ defmodule AmazinWeb.ProductLive.FormComponent do
   end
 
   def handle_event("save", %{"product" => product_params}, socket) do
-    save_product(socket, socket.assigns.action, product_params)
+    action = socket.assigns.action
+    result = save_product(action, socket.assigns.product, product_params)
+    {:noreply, apply_save(socket, action, result)}
   end
 
-  defp save_product(socket, :edit, product_params) do
-    case Products.update(socket.assigns.product, product_params) do
-      {:ok, product} ->
-        Broadcast.notify(:product_updated, product)
-        notify_parent({:saved, product})
+  defp save_product(:new, _product, params), do: SaveProduct.run(:new, params)
+  defp save_product(:edit, product, params), do: SaveProduct.run(:edit, product, params)
 
-        {:noreply,
-         socket
-         |> put_flash(:info, "Product updated successfully")
-         |> push_patch(to: socket.assigns.patch)}
+  defp apply_save(socket, action, {:ok, product}) do
+    notify_parent({:saved, product})
+    verb = if action == :new, do: "created", else: "updated"
 
-      {:error, %Ecto.Changeset{} = changeset} ->
-        {:noreply, assign_form(socket, changeset)}
-    end
+    socket
+    |> put_flash(:info, "Product #{verb} successfully")
+    |> push_patch(to: socket.assigns.patch)
   end
 
-  defp save_product(socket, :new, product_params) do
-    case Products.insert(product_params) do
-      {:ok, product} ->
-        Broadcast.notify(:product_created, product)
-        notify_parent({:saved, product})
-
-        {:noreply,
-         socket
-         |> put_flash(:info, "Product created successfully")
-         |> push_patch(to: socket.assigns.patch)}
-
-      {:error, %Ecto.Changeset{} = changeset} ->
-        {:noreply, assign_form(socket, changeset)}
-    end
+  defp apply_save(socket, _action, {:error, %Ecto.Changeset{} = changeset}) do
+    assign_form(socket, changeset)
   end
 
   defp assign_form(socket, %Ecto.Changeset{} = changeset) do

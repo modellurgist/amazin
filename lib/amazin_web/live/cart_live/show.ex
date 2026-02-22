@@ -2,7 +2,8 @@ defmodule AmazinWeb.CartLive.Show do
   use AmazinWeb, :live_view
 
   alias Amazin.Foundation.Carts
-  alias Amazin.Domain.{Pricing, Checkout}
+  alias Amazin.Domain.Pricing
+  alias Amazin.Actions.PerformCheckout
 
   @impl true
   def mount(_params, session, socket) do
@@ -25,23 +26,17 @@ defmodule AmazinWeb.CartLive.Show do
 
   @impl true
   def handle_event("checkout", _params, socket) do
-    cart_items = Carts.list_items(socket.assigns.cart_id)
-
-    case Checkout.validate(cart_items) do
-      {:ok, items} ->
-        line_items = Checkout.prepare_line_items(items)
-        metadata = %{"cart_id" => socket.assigns.cart_id}
-        urls = %{success_url: url(~p"/cart/success"), cancel_url: url(~p"/cart")}
-
-        {:ok, checkout_url} = payment_gateway().create_checkout_session(line_items, metadata, urls)
-        {:noreply, redirect(socket, external: checkout_url)}
-
-      {:error, :empty_cart} ->
-        {:noreply, put_flash(socket, :error, "Your cart is empty")}
-    end
+    result = PerformCheckout.run(socket.assigns.cart_id, payment_gateway(), checkout_urls())
+    {:noreply, apply_checkout(socket, result)}
   end
+
+  defp apply_checkout(socket, {:ok, url}), do: redirect(socket, external: url)
+  defp apply_checkout(socket, {:error, :empty_cart}), do: put_flash(socket, :error, "Your cart is empty")
+  defp apply_checkout(socket, {:error, _}), do: put_flash(socket, :error, "Checkout failed")
 
   defp payment_gateway do
     Application.get_env(:amazin, :payment_gateway, Amazin.Foundation.StripeGateway)
   end
+
+  defp checkout_urls, do: %{success_url: url(~p"/cart/success"), cancel_url: url(~p"/cart")}
 end
