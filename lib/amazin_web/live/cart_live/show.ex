@@ -9,11 +9,13 @@ defmodule AmazinWeb.CartLive.Show do
   Every handler follows the same shape:
     1. Parse/gather context (early from @page, late from DB)
     2. Call `dispatch/3` which delegates to `CartPage.handle/3`
-    3. `dispatch` assigns the updated page and applies the outcome
+    3. `dispatch` normalizes outcomes via `List.wrap` and folds them
+       through `apply_outcome/2` (Guideline 24)
 
-  Outcomes are self-describing tagged tuples — `{:quantity_changed, item}`,
-  `{:redirect, url}`, etc. — so the same `apply_outcome/2` clause handles
-  an outcome regardless of which event produced it.
+  Outcomes are self-describing tagged tuples. Generic outcomes like
+  `{:flash, level, msg}` and `{:redirect, url}` are reusable across
+  any Page. Domain-specific outcomes like `{:quantity_changed, item}`
+  are handled by cart-specific applicators.
 
   The template renders from @page assigns and @streams.cart_items.
   All components are stateless function components — no LiveComponents,
@@ -94,13 +96,21 @@ defmodule AmazinWeb.CartLive.Show do
   # ---------------------------------------------------------------------------
 
   defp dispatch(socket, event, data) do
-    {page, outcome} = CartPage.handle(event, data, socket.assigns.page)
-    socket |> assign(:page, page) |> apply_outcome(outcome)
+    {page, outcomes} = CartPage.handle(event, data, socket.assigns.page)
+    socket |> assign(:page, page) |> apply_outcomes(List.wrap(outcomes))
+  end
+
+  defp apply_outcomes(socket, outcomes) do
+    Enum.reduce(outcomes, socket, &apply_outcome(&2, &1))
   end
 
   # ---------------------------------------------------------------------------
-  # Outcome application — self-describing: keyed on the outcome, not the event
+  # Outcome applicators — generic ones first, then domain-specific
   # ---------------------------------------------------------------------------
+
+  defp apply_outcome(socket, :noop), do: socket
+  defp apply_outcome(socket, {:flash, level, msg}), do: put_flash(socket, level, msg)
+  defp apply_outcome(socket, {:redirect, url}), do: redirect(socket, external: url)
 
   defp apply_outcome(socket, {:quantity_changed, updated_item}) do
     Carts.update_quantity(socket.assigns.page.cart_id, updated_item.id, updated_item.quantity)
@@ -119,24 +129,6 @@ defmodule AmazinWeb.CartLive.Show do
       payment_gateway().create_checkout_session(line_items, metadata, checkout_urls())
     end)
   end
-
-  defp apply_outcome(socket, {:error, :empty_cart}) do
-    put_flash(socket, :error, "Your cart is empty")
-  end
-
-  defp apply_outcome(socket, {:error, {:out_of_stock, _items}}) do
-    put_flash(socket, :error, "Some items are out of stock")
-  end
-
-  defp apply_outcome(socket, {:redirect, url}) do
-    redirect(socket, external: url)
-  end
-
-  defp apply_outcome(socket, {:checkout_error, msg}) do
-    put_flash(socket, :error, msg)
-  end
-
-  defp apply_outcome(socket, :noop), do: socket
 
   # ---------------------------------------------------------------------------
   # Render — inline for locality of behavior

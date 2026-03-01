@@ -5,6 +5,10 @@ defmodule Amazin.Pages.CartPageTest do
   The test data is plain maps/structs that satisfy the shape contracts
   CartPage expects (items with .id, .quantity, .product.id, .product.amount,
   etc.), proving the Page module is truly decoupled from persistence.
+
+  Handlers that produce multiple effects return a list of outcomes
+  (Guideline 24). Handlers with a single effect return a bare tuple;
+  the LiveView's `List.wrap` normalizes both shapes.
   """
   use ExUnit.Case, async: true
 
@@ -115,7 +119,7 @@ defmodule Amazin.Pages.CartPageTest do
   # -- checkout ---------------------------------------------------------------
 
   describe "handle(:checkout, ...)" do
-    test "with available stock, returns checkout_ready and processing status" do
+    test "with available stock, returns checkout_ready + flash outcomes" do
       items = [
         make_item(%{id: 1, quantity: 2, product: make_product(%{id: 10, amount: 1000, name: "Widget"})}),
         make_item(%{id: 2, quantity: 1, product: make_product(%{id: 20, amount: 500, name: "Gadget"})})
@@ -123,32 +127,33 @@ defmodule Amazin.Pages.CartPageTest do
       page = page_with_items(items)
       stock = %{10 => 5, 20 => 10}
 
-      {new_page, {:checkout_ready, line_items, metadata}} =
+      {new_page, outcomes} =
         CartPage.handle(:checkout, %{stock_levels: stock}, page)
 
       assert new_page.checkout_status == :processing
+      assert {:checkout_ready, line_items, metadata} = hd(outcomes)
       assert length(line_items) == 2
       assert metadata["cart_id"] == 42
+      assert {:flash, :info, _} = List.last(outcomes)
     end
 
-    test "with empty cart, returns error" do
+    test "with empty cart, returns flash error" do
       page = page_with_items([])
 
-      {_page, {:error, :empty_cart}} =
+      {_page, [{:flash, :error, "Your cart is empty"}]} =
         CartPage.handle(:checkout, %{stock_levels: %{}}, page)
     end
 
-    test "with insufficient stock, returns out_of_stock error" do
+    test "with insufficient stock, returns flash error" do
       items = [make_item(%{id: 1, quantity: 5, product: make_product(%{id: 10, amount: 1000})})]
       page = page_with_items(items)
       stock = %{10 => 2}
 
-      {unchanged_page, {:error, {:out_of_stock, unavailable}}} =
+      {unchanged_page, [{:flash, :error, msg}]} =
         CartPage.handle(:checkout, %{stock_levels: stock}, page)
 
       assert unchanged_page.checkout_status == :idle
-      assert length(unavailable) == 1
-      assert hd(unavailable).product_id == 10
+      assert msg =~ "out of stock"
     end
   end
 
@@ -167,14 +172,14 @@ defmodule Amazin.Pages.CartPageTest do
   end
 
   describe "handle(:checkout_failed, ...)" do
-    test "sets error status and returns flash" do
+    test "sets error status and returns flash error outcome" do
       page = %{page_with_items([]) | checkout_status: :processing}
 
-      {new_page, {:checkout_error, msg}} =
+      {new_page, [{:flash, :error, msg}]} =
         CartPage.handle(:checkout_failed, %{}, page)
 
       assert new_page.checkout_status == :error
-      assert is_binary(msg)
+      assert msg =~ "Checkout failed"
     end
   end
 
