@@ -1,25 +1,7 @@
 defmodule AmazinWeb.CartLive.Show do
   @moduledoc """
-  Application layer: LiveView for the shopping cart.
-
-  This module mirrors CoffeeLive's structure: a thin execution context
-  that dispatches events to a pure state machine (CartPage) and applies
-  the outcomes as side effects (persist, stream, flash, redirect, async).
-
-  Every handler follows the same shape:
-    1. Parse/gather context (early from @page, late from DB)
-    2. Call `dispatch/3` which delegates to `CartPage.handle/3`
-    3. `dispatch` normalizes outcomes via `List.wrap` and folds them
-       through `apply_outcome/2` (Guideline 24)
-
-  Outcomes are self-describing tagged tuples. Generic outcomes like
-  `{:flash, level, msg}` and `{:redirect, url}` are reusable across
-  any Page. Domain-specific outcomes like `{:quantity_changed, item}`
-  are handled by cart-specific applicators.
-
-  The template renders from @page assigns and @streams.cart_items.
-  All components are stateless function components — no LiveComponents,
-  no send(self(), ...).
+  Thin LiveView shell for the cart page.
+  Dispatches events to CartPage, then interprets the returned outcomes.
   """
 
   use AmazinWeb, :live_view
@@ -33,25 +15,22 @@ defmodule AmazinWeb.CartLive.Show do
     cart_id = session["cart_id"]
     items = Carts.list_items(cart_id)
     page = CartPage.new(cart_id, items)
-
     if connected?(socket), do: Broadcast.subscribe()
-
     {:ok, socket |> assign(:page, page) |> stream(:cart_items, items)}
   end
 
   @impl true
   def handle_params(_params, _url, socket), do: {:noreply, socket}
 
-  # ---------------------------------------------------------------------------
-  # Event handlers — parse params, then dispatch to CartPage
-  # ---------------------------------------------------------------------------
+  # ── Events ────────────────────────────────────────────────────────────
 
   @impl true
   def handle_event("update_quantity", %{"item-id" => id, "delta" => delta}, socket) do
-    {:noreply, dispatch(socket, :update_quantity, %{
-      item_id: String.to_integer(id),
-      delta: String.to_integer(delta)
-    })}
+    {:noreply,
+     dispatch(socket, :update_quantity, %{
+       item_id: String.to_integer(id),
+       delta: String.to_integer(delta)
+     })}
   end
 
   def handle_event("remove_item", %{"item-id" => id}, socket) do
@@ -63,108 +42,137 @@ defmodule AmazinWeb.CartLive.Show do
     {:noreply, dispatch(socket, :checkout, %{stock_levels: stock})}
   end
 
-  # ---------------------------------------------------------------------------
-  # Async completion — dispatch back through CartPage
-  # ---------------------------------------------------------------------------
+  def handle_event("switch_tab", %{"tab" => tab}, socket) do
+    {:noreply, dispatch(socket, :switch_tab, %{tab: String.to_existing_atom(tab)})}
+  end
+
+  def handle_event("apply_promo", %{"code" => code}, socket) do
+    {:noreply, dispatch(socket, :apply_promo, %{code: code})}
+  end
+
+  # ── Async ─────────────────────────────────────────────────────────────
 
   @impl true
   def handle_async(:checkout, {:ok, {:ok, url}}, socket) do
     {:noreply, dispatch(socket, :checkout_complete, %{url: url})}
   end
 
-  def handle_async(:checkout, {:ok, {:error, reason}}, socket) do
-    {:noreply, dispatch(socket, :checkout_failed, %{reason: reason})}
+  def handle_async(:checkout, {:ok, {:error, _reason}}, socket) do
+    {:noreply, dispatch(socket, :checkout_failed, %{})}
   end
 
   def handle_async(:checkout, {:exit, _reason}, socket) do
     {:noreply, dispatch(socket, :checkout_failed, %{})}
   end
 
-  # ---------------------------------------------------------------------------
-  # PubSub — external changes forwarded to CartPage
-  # ---------------------------------------------------------------------------
+  # ── PubSub ────────────────────────────────────────────────────────────
 
   @impl true
   def handle_info({:stock_changed, {product_id, new_stock}}, socket) do
-    {:noreply, dispatch(socket, :stock_changed, %{product_id: product_id, new_stock: new_stock})}
+    {:noreply,
+     dispatch(socket, :stock_changed, %{product_id: product_id, new_stock: new_stock})}
   end
 
   def handle_info(_msg, socket), do: {:noreply, socket}
 
-  # ---------------------------------------------------------------------------
-  # Dispatch — the uniform bridge between handlers and CartPage
-  # ---------------------------------------------------------------------------
+  # ── Dispatch & Outcome Interpreter ────────────────────────────────────
 
   defp dispatch(socket, event, data) do
     {page, outcomes} = CartPage.handle(event, data, socket.assigns.page)
-    socket |> assign(:page, page) |> apply_outcomes(List.wrap(outcomes))
+    socket |> assign(:page, page) |> apply_outcomes(outcomes)
   end
 
   defp apply_outcomes(socket, outcomes) do
     Enum.reduce(outcomes, socket, &apply_outcome(&2, &1))
   end
 
-  # ---------------------------------------------------------------------------
-  # Outcome applicators — generic ones first, then domain-specific
-  # ---------------------------------------------------------------------------
-
   defp apply_outcome(socket, :noop), do: socket
   defp apply_outcome(socket, {:flash, level, msg}), do: put_flash(socket, level, msg)
   defp apply_outcome(socket, {:redirect, url}), do: redirect(socket, external: url)
+  defp apply_outcome(socket, {:stream_insert, col, item}), do: stream_insert(socket, col, item)
+  defp apply_outcome(socket, {:stream_delete, col, item}), do: stream_delete(socket, col, item)
 
-  defp apply_outcome(socket, {:quantity_changed, updated_item}) do
-    Carts.update_quantity(socket.assigns.page.cart_id, updated_item.id, updated_item.quantity)
-    stream_insert(socket, :cart_items, updated_item)
+  defp apply_outcome(socket, {:stream_reset, col, items}) do
+    stream(socket, col, items, reset: true)
   end
 
-  defp apply_outcome(socket, {:item_removed, item}) when not is_nil(item) do
-    Carts.remove_item(socket.assigns.page.cart_id, item.id)
-    stream_delete(socket, :cart_items, item)
+  defp apply_outcome(socket, {:push_event, event, payload}) do
+    push_event(socket, event, payload)
   end
 
-  defp apply_outcome(socket, {:item_removed, nil}), do: socket
+  defp apply_outcome(socket, {:persist_quantity, cart_id, item_id, qty}) do
+    Carts.update_quantity(cart_id, item_id, qty)
+    socket
+  end
 
-  defp apply_outcome(socket, {:checkout_ready, line_items, metadata}) do
+  defp apply_outcome(socket, {:persist_remove, cart_id, item_id}) do
+    Carts.remove_item(cart_id, item_id)
+    socket
+  end
+
+  defp apply_outcome(socket, {:start_checkout, line_items, metadata}) do
     start_async(socket, :checkout, fn ->
       payment_gateway().create_checkout_session(line_items, metadata, checkout_urls())
     end)
   end
 
-  # ---------------------------------------------------------------------------
-  # Render — inline for locality of behavior
-  # ---------------------------------------------------------------------------
+  # ── Render ────────────────────────────────────────────────────────────
 
   @impl true
   def render(assigns) do
     ~H"""
     <div class="max-w-2xl mx-auto px-6">
-      <h1 class="text-4xl pb-8 font-semibold">Your Cart</h1>
+      <h1 class="text-4xl pb-4 font-semibold">Your Cart</h1>
 
-      <div id="cart_items" phx-update="stream">
-        <.cart_item_row
-          :for={{dom_id, cart_item} <- @streams.cart_items}
-          id={dom_id}
-          cart_item={cart_item}
+      <nav class="flex gap-2 border-b mb-6 pb-2">
+        <button
+          :for={tab <- [:items, :summary]}
+          phx-click="switch_tab"
+          phx-value-tab={tab}
+          class={[
+            "px-4 py-2 text-sm font-medium rounded-t",
+            if(@page.ui.active_tab == tab,
+              do: "bg-zinc-900 text-white",
+              else: "text-zinc-500 hover:text-zinc-700"
+            )
+          ]}
+        >
+          <%= Phoenix.Naming.humanize(tab) %>
+        </button>
+      </nav>
+
+      <div :if={@page.ui.active_tab == :items}>
+        <div id="cart_items" phx-update="stream">
+          <.cart_item_row
+            :for={{dom_id, cart_item} <- @streams.cart_items}
+            id={dom_id}
+            cart_item={cart_item}
+          />
+        </div>
+        <.empty_cart_message :if={@page.domain.items == []} />
+      </div>
+
+      <div :if={@page.ui.active_tab == :summary}>
+        <.cart_summary
+          subtotal={@page.domain.subtotal}
+          discount={@page.domain.discount}
+          total={@page.domain.total}
+          item_count={@page.domain.item_count}
+          promo_code={@page.domain.promo_code}
         />
       </div>
 
-      <.empty_cart_message :if={@page.items == []} />
-      <.cart_total :if={@page.items != []} total={@page.total} />
-      <.checkout_section status={@page.checkout_status} empty={@page.items == []} />
+      <.promo_form error={@page.ui.promo_error} current_code={@page.domain.promo_code} />
+      <.checkout_section status={@page.checkout_status} empty={@page.domain.items == []} />
     </div>
     """
   end
 
-  # ---------------------------------------------------------------------------
-  # Function components — pure functions of assigns, no domain logic
-  # ---------------------------------------------------------------------------
+  # ── Function Components ───────────────────────────────────────────────
 
   defp cart_item_row(assigns) do
     ~H"""
-    <div
-      id={@id}
-      class="grid grid-cols-[4rem_1fr_auto_auto] items-center gap-4 border-b py-4"
-    >
+    <div id={@id} class="grid grid-cols-[4rem_1fr_auto_auto] items-center gap-4 border-b py-4">
       <img
         class="w-16 h-16 object-contain"
         src={@cart_item.product.thumbnail}
@@ -172,9 +180,7 @@ defmodule AmazinWeb.CartLive.Show do
       />
       <div>
         <div class="font-medium"><%= @cart_item.product.name %></div>
-        <div class="text-sm text-zinc-500">
-          <%= Money.new(@cart_item.product.amount) %> each
-        </div>
+        <div class="text-sm text-zinc-500"><%= Money.new(@cart_item.product.amount) %> each</div>
         <.stock_badge stock={@cart_item.product.stock} />
       </div>
       <div class="flex items-center gap-2">
@@ -240,12 +246,43 @@ defmodule AmazinWeb.CartLive.Show do
     """
   end
 
-  defp cart_total(assigns) do
+  defp cart_summary(assigns) do
     ~H"""
-    <div class="flex justify-between items-center py-6 border-t-2">
-      <span class="font-bold text-xl">Total</span>
-      <span class="font-bold text-xl"><%= @total %></span>
+    <div class="space-y-3 py-6">
+      <div class="flex justify-between text-zinc-600">
+        <span>Items</span><span><%= @item_count %></span>
+      </div>
+      <div class="flex justify-between text-zinc-600">
+        <span>Subtotal</span><span><%= @subtotal %></span>
+      </div>
+      <div :if={@promo_code} class="flex justify-between text-green-600">
+        <span>Discount (<%= @promo_code %>)</span><span>-<%= @discount %></span>
+      </div>
+      <div class="flex justify-between items-center py-3 border-t-2 font-bold text-xl">
+        <span>Total</span><span><%= @total %></span>
+      </div>
     </div>
+    """
+  end
+
+  defp promo_form(assigns) do
+    ~H"""
+    <form phx-submit="apply_promo" class="flex gap-2 py-4">
+      <input
+        type="text"
+        name="code"
+        placeholder="Promo code"
+        value={@current_code || ""}
+        class="rounded border border-zinc-300 px-3 py-1.5 text-sm"
+      />
+      <button
+        type="submit"
+        class="rounded bg-zinc-200 px-4 py-1.5 text-sm font-medium hover:bg-zinc-300"
+      >
+        Apply
+      </button>
+      <span :if={@error} class="text-red-500 text-sm self-center"><%= @error %></span>
+    </form>
     """
   end
 
@@ -256,36 +293,56 @@ defmodule AmazinWeb.CartLive.Show do
         :if={@status == :idle}
         phx-click="checkout"
         disabled={@empty}
-        class={["phx-submit-loading:opacity-75 rounded-lg bg-zinc-900 hover:bg-zinc-700 py-2 px-3 text-sm font-semibold leading-6 text-white active:text-white/80", @empty && "opacity-50 cursor-not-allowed"]}
+        class={[
+          "phx-submit-loading:opacity-75 rounded-lg bg-zinc-900 hover:bg-zinc-700",
+          "py-2 px-3 text-sm font-semibold leading-6 text-white active:text-white/80",
+          @empty && "opacity-50 cursor-not-allowed"
+        ]}
       >
         Checkout
       </button>
       <div :if={@status == :processing} class="flex items-center gap-3 text-zinc-500 py-2">
         <svg class="animate-spin h-5 w-5" viewBox="0 0 24 24" fill="none">
-          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
-          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          <circle
+            class="opacity-25"
+            cx="12"
+            cy="12"
+            r="10"
+            stroke="currentColor"
+            stroke-width="4"
+          />
+          <path
+            class="opacity-75"
+            fill="currentColor"
+            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+          />
         </svg>
         Processing payment...
       </div>
       <div :if={@status == :error} class="space-y-2">
         <p class="text-red-600 text-sm">Checkout failed.</p>
-        <.button phx-click="checkout">Try again</.button>
+        <button
+          phx-click="checkout"
+          class="rounded-lg bg-zinc-900 hover:bg-zinc-700 py-2 px-3 text-sm font-semibold leading-6 text-white"
+        >
+          Try again
+        </button>
       </div>
     </div>
     """
   end
 
-  # ---------------------------------------------------------------------------
-  # Helpers
-  # ---------------------------------------------------------------------------
+  # ── Helpers ───────────────────────────────────────────────────────────
 
   defp payment_gateway do
     Application.get_env(:amazin, :payment_gateway, Amazin.Foundation.StripeGateway)
   end
 
-  defp checkout_urls, do: %{success_url: url(~p"/cart/success"), cancel_url: url(~p"/cart")}
+  defp checkout_urls do
+    %{success_url: url(~p"/cart/success"), cancel_url: url(~p"/cart")}
+  end
 
-  defp product_ids(%CartPage{items: items}) do
+  defp product_ids(%CartPage{domain: %{items: items}}) do
     Enum.map(items, & &1.product.id)
   end
 end

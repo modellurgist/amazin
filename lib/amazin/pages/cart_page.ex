@@ -1,135 +1,155 @@
 defmodule Amazin.Pages.CartPage do
   @moduledoc """
-  Application-layer page state machine for the shopping cart.
-
-  Like CoffeeMaker for the coffee machine, CartPage holds ALL the cart
-  page's working state and processes events as pure functions returning
-  `{new_page, outcome}`.
-
-  ## ALA layering
-
-  CartPage is an Application-layer module. It orchestrates Domain
-  abstractions (Pricing, Checkout, Inventory) the same way CoffeeMaker
-  orchestrates Boiler, WarmerPlate, and UserInterface. It never calls
-  Foundation persistence or Phoenix — the LiveView handles those as
-  side effects based on the outcomes.
-
-  ## Outcomes (Guideline 24)
-
-  `handle/3` returns `{new_page, outcomes}` where outcomes is either a
-  single tagged tuple or a list of them. The LiveView's `dispatch/3`
-  uses `List.wrap` to normalize and folds them through `apply_outcome/2`.
-
-  Generic outcomes (reusable across any Page):
-  - `{:flash, level, message}`
-  - `{:redirect, url}`
-  - `:noop`
-
-  Domain-specific outcomes (cart-specific applicators):
-  - `{:quantity_changed, item}`
-  - `{:item_removed, item}`
-  - `{:checkout_ready, line_items, metadata}`
-
-  ## Loading tiers
-
-  - **Early (struct fields):** `items`, `total`, `checkout_status` —
-    session-owned state loaded on mount, updated in-memory on events.
-  - **Late (data argument):** `stock_levels` for checkout — fresh
-    external data gathered by the LiveView before calling handle/3.
-  - **Pushed (PubSub forwarded):** `:stock_changed` — external changes
-    the LiveView receives and forwards to handle/3.
+  Embedded Dual Page — collapses UI and Domain into a single Page module.
+  Handlers update one or both sub-structs atomically and return {page, [outcome]}.
   """
+
+  import Amazin.Outcome
 
   alias Amazin.Domain.{Pricing, Checkout, Inventory}
 
-  defstruct [:cart_id, :items, :total, checkout_status: :idle]
+  # ── Embedded sub-structs ──────────────────────────────────────────────
+
+  defmodule UI do
+    @moduledoc false
+    defstruct active_tab: :items,
+              promo_error: nil
+  end
+
+  defmodule Domain do
+    @moduledoc false
+    defstruct cart_id: nil,
+              items: [],
+              total: Money.new(0),
+              subtotal: Money.new(0),
+              discount: Money.new(0),
+              item_count: 0,
+              promo_code: nil,
+              promo_percentage: nil
+  end
+
+  # ── Top-level struct ──────────────────────────────────────────────────
+
+  defstruct [:ui, :domain, checkout_status: :idle]
 
   @type t :: %__MODULE__{
-          cart_id: integer(),
-          items: list(),
-          total: Money.t(),
+          ui: UI.t(),
+          domain: Domain.t(),
           checkout_status: :idle | :processing | :complete | :error
         }
 
-  @spec new(integer(), list()) :: t()
+  # ── Constructor ───────────────────────────────────────────────────────
+
+  @spec new(integer(), [map()]) :: t()
   def new(cart_id, items) do
-    %__MODULE__{
-      cart_id: cart_id,
-      items: items,
-      total: Pricing.cart_total(items)
-    }
+    domain = %Domain{cart_id: cart_id, items: items}
+    %__MODULE__{ui: %UI{}, domain: recalc(domain)}
   end
 
-  # -- Quantity adjustment (early-loaded state only) --------------------------
+  # ── Handlers — return {page, [outcome]} ───────────────────────────────
 
-  @type outcome :: term()
-  @spec handle(atom(), map(), t()) :: {t(), outcome() | [outcome()]}
+  @spec handle(atom(), map(), t()) :: {t(), [term()]}
+
+  def handle(:switch_tab, %{tab: tab}, page) do
+    {put_in(page.ui.active_tab, tab), []}
+  end
 
   def handle(:update_quantity, %{item_id: item_id, delta: delta}, page) do
-    items = update_item_quantity(page.items, item_id, delta)
+    items = update_item_quantity(page.domain.items, item_id, delta)
     updated_item = Enum.find(items, &(&1.id == item_id))
+    domain = recalc(%{page.domain | items: items})
 
-    {%{page | items: items, total: Pricing.cart_total(items)},
-     {:quantity_changed, updated_item}}
+    {%{page | domain: domain},
+     [
+       persist_quantity(domain.cart_id, item_id, updated_item.quantity),
+       stream_insert(:cart_items, updated_item)
+     ]}
   end
 
   def handle(:remove_item, %{item_id: item_id}, page) do
-    {removed, remaining} = pop_item(page.items, item_id)
+    {removed, remaining} = pop_item(page.domain.items, item_id)
+    domain = recalc(%{page.domain | items: remaining})
 
-    {%{page | items: remaining, total: Pricing.cart_total(remaining)},
-     {:item_removed, removed}}
+    outcomes =
+      if removed do
+        [
+          persist_remove(domain.cart_id, item_id),
+          stream_delete(:cart_items, removed),
+          push_event("item_removed", %{id: item_id}),
+          flash(:info, "Item removed")
+        ]
+      else
+        []
+      end
+
+    {%{page | domain: domain}, outcomes}
   end
 
-  # -- Checkout (late-loaded stock_levels) ------------------------------------
-
   def handle(:checkout, %{stock_levels: stock}, page) do
-    case Checkout.validate(page.items) do
+    case Checkout.validate(page.domain.items) do
       {:ok, items} ->
         case Inventory.check_availability(items, stock) do
           :ok ->
             line_items = Checkout.prepare_line_items(items)
-            metadata = %{"cart_id" => page.cart_id}
+            metadata = %{"cart_id" => page.domain.cart_id}
 
             {%{page | checkout_status: :processing},
-             [{:checkout_ready, line_items, metadata},
-              {:flash, :info, "Processing payment..."}]}
+             [start_checkout(line_items, metadata), flash(:info, "Processing payment...")]}
 
-          {:error, _unavailable} ->
-            {page, [{:flash, :error, "Some items are out of stock"}]}
+          {:error, _} ->
+            {page, [flash(:error, "Some items are out of stock")]}
         end
 
       {:error, :empty_cart} ->
-        {page, [{:flash, :error, "Your cart is empty"}]}
+        {page, [flash(:error, "Your cart is empty")]}
     end
   end
 
-  # -- Async completion (dispatched from handle_async) ------------------------
-
   def handle(:checkout_complete, %{url: url}, page) do
-    {%{page | checkout_status: :complete}, {:redirect, url}}
+    {%{page | checkout_status: :complete}, [redirect(url)]}
   end
 
   def handle(:checkout_failed, _data, page) do
-    {%{page | checkout_status: :error},
-     [{:flash, :error, "Checkout failed. Please try again."}]}
+    {%{page | checkout_status: :error}, [flash(:error, "Checkout failed. Please try again.")]}
   end
-
-  # -- PubSub: external stock change ------------------------------------------
 
   def handle(:stock_changed, %{product_id: pid, new_stock: stock}, page) do
-    items = update_product_stock(page.items, pid, stock)
-    {%{page | items: items}, :noop}
+    items = update_product_stock(page.domain.items, pid, stock)
+    updated_item = Enum.find(items, &(&1.product.id == pid))
+    domain = %{page.domain | items: items}
+    outcomes = if updated_item, do: [stream_insert(:cart_items, updated_item)], else: []
+    {%{page | domain: domain}, outcomes}
   end
 
-  # -- Pure helpers -----------------------------------------------------------
+  def handle(:apply_promo, %{code: code}, page) do
+    case Pricing.validate_promo(code) do
+      {:ok, pct} ->
+        domain = recalc(%{page.domain | promo_code: code, promo_percentage: pct})
+        ui = %{page.ui | promo_error: nil}
+        {%{page | domain: domain, ui: ui}, [flash(:info, "Promo code applied!")]}
+
+      {:error, :invalid_code} ->
+        ui = %{page.ui | promo_error: "Invalid promo code"}
+        {%{page | ui: ui}, [flash(:error, "Invalid promo code")]}
+    end
+  end
+
+  # ── Private helpers ───────────────────────────────────────────────────
+
+  defp recalc(domain) do
+    sub = Pricing.subtotal_cents(domain.items)
+    {total, disc} = Pricing.apply_discount(sub, domain.promo_percentage || 0)
+
+    %{domain |
+      subtotal: Money.new(sub),
+      total: Money.new(total),
+      discount: Money.new(disc),
+      item_count: Pricing.item_count(domain.items)}
+  end
 
   defp update_item_quantity(items, item_id, delta) do
     Enum.map(items, fn item ->
-      if item.id == item_id do
-        %{item | quantity: max(1, item.quantity + delta)}
-      else
-        item
-      end
+      if item.id == item_id, do: %{item | quantity: max(1, item.quantity + delta)}, else: item
     end)
   end
 
@@ -142,11 +162,9 @@ defmodule Amazin.Pages.CartPage do
 
   defp update_product_stock(items, product_id, new_stock) do
     Enum.map(items, fn item ->
-      if item.product.id == product_id do
-        %{item | product: %{item.product | stock: new_stock}}
-      else
-        item
-      end
+      if item.product.id == product_id,
+        do: %{item | product: %{item.product | stock: new_stock}},
+        else: item
     end)
   end
 end
