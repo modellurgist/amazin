@@ -1,7 +1,10 @@
 defmodule Amazin.Outcome do
   @moduledoc """
-  Outcome constructors for compiler-safe side-effect declarations.
-  Handlers return {page, [outcome]} tuples; the LiveView shell interprets them.
+  Outcome constructors with signal support for V14 dual-machine coordination.
+
+  Extends the standard outcome vocabulary with `signal/1` and `signal/2` —
+  the mechanism by which CartDomain tells CartUI what happened without
+  either machine knowing the other's internal structure.
   """
 
   @spec noop() :: :noop
@@ -34,4 +37,16 @@ defmodule Amazin.Outcome do
 
   @spec start_checkout([map()], map()) :: {:start_checkout, [map()], map()}
   def start_checkout(line_items, metadata), do: {:start_checkout, line_items, metadata}
+
+  @spec signal(atom()) :: {:signal, atom()}
+  def signal(name), do: {:signal, name}
+
+  @spec signal(atom(), term()) :: {:signal, atom(), term()}
+  def signal(name, data), do: {:signal, name, data}
+
+  @spec start_undo_timer(integer()) :: {:start_undo_timer, integer()}
+  def start_undo_timer(item_id), do: {:start_undo_timer, item_id}
+
+  @spec cancel_undo_timer() :: :cancel_undo_timer
+  def cancel_undo_timer, do: :cancel_undo_timer
 end

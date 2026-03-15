@@ -49,4 +49,14 @@ defmodule Amazin.Domain.Pricing do
     {final, disc} = apply_discount(sub, percentage)
     {Money.new(final), Money.new(disc)}
   end
+
+  @gift_wrap_cost_cents 299
+
+  @spec gift_wrap_cost_per_item() :: integer()
+  def gift_wrap_cost_per_item, do: @gift_wrap_cost_cents
+
+  @spec gift_wrap_total(non_neg_integer()) :: integer()
+  def gift_wrap_total(count) when is_integer(count) and count >= 0 do
+    count * @gift_wrap_cost_cents
+  end
 end
