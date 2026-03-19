@@ -1,14 +1,15 @@
-# V14 Dual+Signals Credo configuration
+# V27 Explicitly-Wired Features — Credo configuration
 #
-# Copy this file to amazin/.credo.exs when running the V14 variant,
+# Copy this file to amazin/.credo.exs when running the V27 variant,
 # or have switch.sh copy it automatically.
 #
 # This configuration enforces:
-# 1. Vertical ALA layer boundaries (existing rule)
-# 2. Horizontal UI↔Domain machine independence
-# 3. Signal flow direction (domain→UI only)
+# 1. Vertical ALA layer boundaries (domain, features, foundation)
+# 2. Cross-feature independence (no peer feature references)
+# 3. Capsule role discipline (Domain: output, no react; UI: react, no output)
 # 4. Typed outcome constructors over raw tuples
-# 5. Thin LiveView shell (no domain logic in LiveView)
+# 5. Thin LiveView shell (no domain abstractions in LiveView)
+# 6. PubSub wiring discipline (no deprecated Broadcast.notify, no direct deliver)
 
 %{
   configs: [
@@ -16,15 +17,16 @@
       name: "default",
       files: %{
         included: ["lib/", "test/"],
-        excluded: [~r"/_build/", ~r"/deps/"]
+        excluded: [~r"/_build/", ~r"/deps/", ~r"/lib/amazin/credo/"]
       },
       plugins: [],
       requires: [
         "lib/amazin/credo/ala_layer_boundary.ex",
-        "lib/amazin/credo/v14_horizontal_coupling.ex",
-        "lib/amazin/credo/v14_signal_discipline.ex",
-        "lib/amazin/credo/v14_outcome_constructor.ex",
-        "lib/amazin/credo/v14_liveview_thin_shell.ex"
+        "lib/amazin/credo/v27_cross_feature_coupling.ex",
+        "lib/amazin/credo/v27_capsule_discipline.ex",
+        "lib/amazin/credo/v27_outcome_constructor.ex",
+        "lib/amazin/credo/v27_liveview_thin_shell.ex",
+        "lib/amazin/credo/v27_no_broadcast_notify.ex"
       ],
       strict: false,
       parse_timeout: 5000,
@@ -33,33 +35,34 @@
         enabled: [
           # ── 1. Vertical ALA layer boundaries ──────────────────────────
           #
-          # Domain modules: no persistence, no Phoenix, no framework.
-          # UI machines: no persistence, no Phoenix, no framework.
-          # Foundation: no upward deps into Domain/UI/Pages.
+          # Domain abstractions: pure logic, no persistence, no Phoenix.
+          # Feature capsules: call domain abstractions downward, never
+          #   infrastructure, framework, or the wiring table directly.
+          # Foundation: no upward deps into Domain, Features, or Web.
           #
           {Credo.Check.Custom.AlaLayerBoundary, [
             layers: [
               %{
-                name: "Domain",
+                name: "Domain abstractions",
                 path: "lib/amazin/domain/",
                 forbidden_prefixes: [
                   "Amazin.Foundation",
-                  "Amazin.Pages",
+                  "Amazin.Features",
                   "Amazin.Actions",
-                  "Amazin.UI",
+                  "Amazin.Wiring",
+                  "Amazin.Dispatcher",
                   "AmazinWeb",
                   "Phoenix",
-                  "Ecto.Repo",
-                  "Ecto.Query",
-                  "Ecto.Changeset"
+                  "Ecto"
                 ]
               },
               %{
-                name: "UI Machines",
-                path: "lib/amazin/ui/",
+                name: "Feature capsules",
+                path: "lib/amazin/features/",
                 forbidden_prefixes: [
                   "Amazin.Foundation",
-                  "Amazin.Domain",
+                  "Amazin.Wiring",
+                  "Amazin.Dispatcher",
                   "AmazinWeb",
                   "Phoenix",
                   "Ecto"
@@ -70,63 +73,77 @@
                 path: "lib/amazin/foundation/",
                 forbidden_prefixes: [
                   "Amazin.Domain",
-                  "Amazin.Pages",
+                  "Amazin.Features",
                   "Amazin.Actions",
-                  "Amazin.UI"
+                  "Amazin.Wiring",
+                  "Amazin.Dispatcher"
                 ]
               }
             ]
           ]},
 
-          # ── 2. Horizontal UI↔Domain machine independence ──────────────
+          # ── 2. Cross-feature independence ──────────────────────────────
           #
-          # CartUI must not reference CartDomain and vice versa.
-          # Add more pairs as machines are added (e.g., Order, Wishlist).
+          # Feature capsules must not alias/import/use other feature modules.
+          # All cross-feature communication flows through the wiring table.
           #
-          {Credo.Check.Custom.V14HorizontalCoupling, [
-            pairs: [
-              %{
-                name: "Cart",
-                ui_path: "lib/amazin/ui/cart_ui",
-                ui_forbidden: ["Amazin.Domain.CartDomain"],
-                domain_path: "lib/amazin/domain/cart_domain",
-                domain_forbidden: ["Amazin.UI."]
-              }
-            ]
+          {Credo.Check.Custom.V27CrossFeatureCoupling, [
+            features_path: "lib/amazin/features/"
           ]},
 
-          # ── 3. Signal flow direction ──────────────────────────────────
+          # ── 3. Capsule role discipline ─────────────────────────────────
           #
-          # Only domain machines emit signal(); only UI machines define react/2.
+          # Domain capsules: emit output/2, MUST NOT define react/3.
+          # UI capsules: define react/3, MUST NOT call output/2.
           #
-          {Credo.Check.Custom.V14SignalDiscipline, [
-            ui_path: "lib/amazin/ui/",
-            domain_path: "lib/amazin/domain/"
+          {Credo.Check.Custom.V27CapsuleDiscipline, [
+            features_path: "lib/amazin/features/"
           ]},
 
-          # ── 4. Typed outcome constructors ─────────────────────────────
+          # ── 4. Typed outcome constructors ──────────────────────────────
           #
-          # Machine modules should use Outcome.flash(...) not {:flash, ...}.
+          # Capsules should use flash(:error, msg) not {:flash, :error, msg}.
           #
-          {Credo.Check.Custom.V14OutcomeConstructor, [
-            machine_paths: ["lib/amazin/ui/", "lib/amazin/domain/"],
+          {Credo.Check.Custom.V27OutcomeConstructor, [
+            capsule_paths: ["lib/amazin/features/"],
             outcome_tags: [
               :flash, :redirect, :stream_insert, :stream_delete,
               :stream_reset, :push_event, :persist_quantity,
-              :persist_remove, :start_checkout, :signal
+              :persist_remove, :start_checkout, :output,
+              :start_undo_timer
             ]
           ]},
 
-          # ── 5. Thin LiveView shell ────────────────────────────────────
+          # ── 5. Thin LiveView shell ─────────────────────────────────────
           #
-          # LiveView should delegate to machines, not call domain services directly.
+          # LiveView dispatches events to capsules and applies outcomes.
+          # It must not call domain abstraction modules directly.
           #
-          {Credo.Check.Custom.V14LiveViewThinShell, [
+          {Credo.Check.Custom.V27LiveViewThinShell, [
             liveview_path: "lib/amazin_web/live/",
             forbidden_in_liveview: [
-              "Amazin.Domain.Pricing",
-              "Amazin.Domain.Checkout"
+              "Amazin.Domain."
+            ],
+            # Presentation-oriented domain abstractions used in templates:
+            # StockStatus (stock badges), ShippingInfo (method labels),
+            # CalculateShipping (format shipping cost in helpers).
+            # Kept here rather than in capsules because they serve the
+            # LiveView's rendering responsibility.
+            allowed_in_liveview: [
+              "Amazin.Domain.StockStatus",
+              "Amazin.Domain.ShippingInfo",
+              "Amazin.Domain.CalculateShipping"
             ]
+          ]},
+
+          # ── 6. PubSub wiring discipline ────────────────────────────────
+          #
+          # No Broadcast.notify (deprecated V26 API).
+          # No direct Broadcast.deliver outside Amazin.Wiring.
+          #
+          {Credo.Check.Custom.V27NoBroadcastNotify, [
+            wiring_module_path: "lib/amazin/wiring.ex",
+            broadcast_module_path: "lib/amazin/foundation/broadcast.ex"
           ]}
         ]
       }
